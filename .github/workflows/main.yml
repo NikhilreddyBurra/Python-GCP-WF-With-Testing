@@ -1,0 +1,136 @@
+name: Deploy To Google Cloud Run 
+# Controls when the action will run. 
+on:
+  push:
+    branches: [ dev ]
+  pull_request:
+    branches: [ dev ]
+  workflow_dispatch:
+    branches: [ dev ]
+
+  
+jobs:
+  # This workflow contains a single job called "build"
+  build:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 4
+      matrix:
+        python-version: [3.7]
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+    
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 pytest
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+    
+      - name: Lint with flake8
+        run: |
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        
+      - name: Vulnerability Code Scan
+        run: |
+          pip install bandit
+          bandit --recursive **/*.py
+      
+  deployToBeta:     
+    runs-on: devops
+    needs: build
+    strategy:
+      max-parallel: 4
+      matrix:
+        python-version: [3.7] 
+    steps:
+      - name: Set up gcloud Cloud SDK environment
+        uses: google-github-actions/setup-gcloud@v0.2.0
+        with: 
+          service_account_key: ${{secrets.RUN_SA_KEY}}
+          
+      - name: Login to Docker Registry
+        run: |
+          gcloud auth configure-docker --quiet
+      
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      
+        
+      # Runs a set of commands using the runners shell
+      # RUN_PROJECT: It is the name of project in the GCP.
+      - name: Build Docker Image
+        run: |
+          docker build -t gcr.io/${{secrets.RUN_PROJECT}}/<image_name> .
+      
+      # vault kv get -address="https://vault.sirpi.co.in" -field=env kv/projects/herokutest > .env
+      # vault kv get -address="https://vault.sirpi.co.in" -field=ignore kv/projects/herokutest > .gitignore
+      - name: Push Docker image
+        run: |
+          docker push gcr.io/${{secrets.RUN_PROJECT}}/<image_name>
+      
+      - name: Deploy Docker image
+        run: |
+          gcloud run deploy <image_name> --project=${{secrets.RUN_PROJECT}} --image gcr.io/${{secrets.RUN_PROJECT}}/<image_name> --region us-central1 --allow-unauthenticated --platform managed
+      
+      - name: Integration Tests
+        run: |
+          pip install pytest
+          py.test *.py
+          
+
+#   deployToProd:  
+#     runs-on: devops
+#     needs: deployToBeta
+#     strategy:
+#       max-parallel: 4
+#       matrix:
+#         python-version: [3.7] 
+#     steps:
+#       - name: Set up gcloud Cloud SDK environment
+#         uses: google-github-actions/setup-gcloud@v0.2.0
+#         with: 
+#           service_account_key: ${{secrets.RUN_SA_KEY}}
+          
+#       - name: Login to Docker Registry
+#         run: |
+#           vault kv get -address="https://vault.sirpi.co.in" -field=env kv/projects/herokutest > .env
+#           vault kv get -address="https://vault.sirpi.co.in" -field=ignore kv/projects/herokutest > .gitignore
+#           gcloud auth configure-docker --quiet
+      
+#       - name: Checkout repository
+#         uses: actions/checkout@v2
+      
+# #       - name: Set env
+# #         working-directory: ./client
+# #         run: echo REACT_APP_BACKEND_HOST=${{secrets.BACKEND_ENDPOINT}} | cat > .env
+        
+#       # Runs a set of commands using the runners shell
+#       - name: Build Docker Image
+#         run: |
+#           vault kv get -address="https://vault.sirpi.co.in" -field=env kv/projects/herokutest > .env
+#           vault kv get -address="https://vault.sirpi.co.in" -field=ignore kv/projects/herokutest > .gitignore
+#           docker build -t gcr.io/${{secrets.RUN_PROJECT}}/windvista-api-flask-blueprint-prod .
+      
+#       - name: Push Docker image
+#         run: |
+#           vault kv get -address="https://vault.sirpi.co.in" -field=env kv/projects/herokutest > .env
+#           vault kv get -address="https://vault.sirpi.co.in" -field=ignore kv/projects/herokutest > .gitignore
+#           docker push gcr.io/${{secrets.RUN_PROJECT}}/windvista-api-flask-blueprint-prod
+      
+#       - name: Deploy Docker image
+#         run: |
+#           vault kv get -address="https://vault.sirpi.co.in" -field=env kv/projects/herokutest > .env
+#           vault kv get -address="https://vault.sirpi.co.in" -field=ignore kv/projects/herokutest > .gitignore
+#           gcloud run deploy windvista-api-flask-blueprint-prod --project=${{secrets.RUN_PROJECT}} --image gcr.io/${{secrets.RUN_PROJECT}}/windvista-api-flask-blueprint-prod --region us-central1 --allow-unauthenticated --platform managed
